@@ -1,4 +1,10 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
+import {
+  buildOpenScadSetupCommands,
+  buildPromptCommand,
+  detectPlatform,
+  type Platform,
+} from './setupCommands'
 
 const REPOSITORY = 'https://github.com/arora13/Ido'
 const RELEASES = `${REPOSITORY}/releases/latest/download`
@@ -67,6 +73,12 @@ const downloadLinks = [
   ['Windows', `${RELEASES}/ido-windows.exe`, 'Windows 10 and 11'],
   ['Linux', `${RELEASES}/ido-linux.AppImage`, 'AppImage'],
 ] as const
+
+const PLATFORM_LABELS: Record<Platform, string> = {
+  macos: 'macOS',
+  windows: 'Windows',
+  linux: 'Linux',
+}
 
 function OpenUIPreview({ elements }: { elements: OpenUIElement[] }) {
   if (!elements.length) return null
@@ -178,7 +190,7 @@ function ToolPreview({ tool }: { tool: Tool }) {
   )
 }
 
-function CopyCommand({ command }: { command: string }) {
+function CopyCommand({ command, multiline = false }: { command: string; multiline?: boolean }) {
   const [copied, setCopied] = useState(false)
   const copy = async () => {
     await navigator.clipboard.writeText(command)
@@ -186,12 +198,46 @@ function CopyCommand({ command }: { command: string }) {
     window.setTimeout(() => setCopied(false), 1400)
   }
   return (
-    <div className="command">
+    <div className={`command${multiline ? ' command-multiline' : ''}`}>
       <code>{command}</code>
-      <button type="button" onClick={copy} aria-label={`Copy ${command}`}>
+      <button type="button" onClick={copy} aria-label="Copy command">
         <CopyIcon />
         <span>{copied ? 'Copied' : 'Copy'}</span>
       </button>
+    </div>
+  )
+}
+
+function SetupCommandGenerator() {
+  const [platform, setPlatform] = useState<Platform>(() => detectPlatform())
+  const [visible, setVisible] = useState(true)
+  const commands = buildOpenScadSetupCommands(platform)
+
+  return (
+    <div className="setup-command-generator">
+      <div className="setup-command-actions">
+        <button type="button" className="outline-button" onClick={() => setVisible(true)}>
+          Generate setup commands
+        </button>
+        <div className="platform-picker" role="group" aria-label="Target platform">
+          {(Object.keys(PLATFORM_LABELS) as Platform[]).map((value) => (
+            <button
+              key={value}
+              type="button"
+              className={platform === value ? 'active' : undefined}
+              onClick={() => {
+                setPlatform(value)
+                setVisible(true)
+              }}
+            >
+              {PLATFORM_LABELS[value]}
+            </button>
+          ))}
+        </div>
+      </div>
+      {visible ? (
+        <CopyCommand command={commands} multiline />
+      ) : null}
     </div>
   )
 }
@@ -203,6 +249,7 @@ function SetupSection({
   description,
   steps,
   command,
+  setupGenerator,
 }: {
   id: string
   tool: Tool
@@ -210,6 +257,7 @@ function SetupSection({
   description: string
   steps: string[]
   command: string
+  setupGenerator?: boolean
 }) {
   return (
     <section className="setup-section rule-section" id={id}>
@@ -224,6 +272,7 @@ function SetupSection({
             </li>
           ))}
         </ol>
+        {setupGenerator ? <SetupCommandGenerator /> : null}
         {tool === 'blender' ? (
           <a className="outline-button" href={BLENDER_ADDON}>
             Download ido_blender.zip <ArrowIcon />
@@ -237,8 +286,7 @@ function SetupSection({
             <small>Open {tool === 'blender' ? 'Blender' : 'OpenSCAD'} with idō</small>
             <CopyCommand command={command} />
           </div>
-          <div className="pet-status">
-            <img src="./ido-pet.svg" alt="Original idō desktop pet" />
+          <div className="tool-ready">
             <span>{tool === 'blender' ? 'Blender ready' : 'OpenSCAD ready'}</span>
           </div>
         </div>
@@ -253,6 +301,7 @@ function LocalControl() {
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
   const [integrations, setIntegrations] = useState<IntegrationsStatus | null>(null)
   const [lastResult, setLastResult] = useState<PromptResult | null>(null)
+  const [lastPrompt, setLastPrompt] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const local = ['localhost', '127.0.0.1'].includes(window.location.hostname)
 
@@ -287,13 +336,14 @@ function LocalControl() {
     event.preventDefault()
     if (!prompt.trim()) return
     setSubmitting(true)
+    const submittedPrompt = prompt.trim()
     const path = tool === 'openscad' ? '/api/openscad/prompt' : '/api/prompt'
     const currentIr =
       lastResult?.status === 'ok' && lastResult.ir ? lastResult.ir : null
     const payload =
       tool === 'openscad'
-        ? { prompt, current_ir: currentIr }
-        : { prompt, current_ir: currentIr, target_tool: 'blender' }
+        ? { prompt: submittedPrompt, current_ir: currentIr }
+        : { prompt: submittedPrompt, current_ir: currentIr, target_tool: 'blender' }
     try {
       const response = await fetch(path, {
         method: 'POST',
@@ -302,6 +352,7 @@ function LocalControl() {
       })
       const body = await response.json()
       setLastResult(body)
+      setLastPrompt(submittedPrompt)
       setPrompt('')
     } finally {
       setSubmitting(false)
@@ -371,6 +422,9 @@ function LocalControl() {
           )}
           {lastResult.status === 'ok' && lastResult.openui_elements?.length ? (
             <OpenUIPreview elements={lastResult.openui_elements} />
+          ) : null}
+          {lastPrompt ? (
+            <CopyCommand command={buildPromptCommand(tool, lastPrompt)} />
           ) : null}
         </div>
       )}
@@ -517,7 +571,7 @@ export default function App() {
             <p>
               Design in Blender. Engineer in OpenSCAD.
               <br />
-              One local companion and one pet keeps the work moving.
+              One local companion keeps the work moving.
             </p>
           </div>
           <div className="tool-choice">
@@ -530,10 +584,10 @@ export default function App() {
               </a>
               <ToolPreview tool="blender" />
             </article>
-            <div className="shared-pet" aria-label="Shared idō companion">
-              <span className="pet-line" />
-              <img src="./ido-pet.svg" alt="" />
-              <span className="pet-line" />
+            <div className="tool-divider" aria-hidden="true">
+              <span className="tool-divider-line" />
+              <span className="tool-divider-label">idō</span>
+              <span className="tool-divider-line" />
             </div>
             <article>
               <small>ENGINEERING</small>
@@ -578,32 +632,25 @@ export default function App() {
           id="openscad"
           tool="openscad"
           title="Engineer with OpenSCAD."
-          description="Install the companion, run one command, and let idō update a watched SCAD file with validated geometry and exports."
+          description="Install OpenSCAD and idō from source, then open a watched SCAD file with validated geometry and exports."
           steps={[
-            'Install OpenSCAD and the idō companion.',
-            'Run idō open openscad from your terminal.',
-            'Prompt from the CLI, local dashboard, or desktop pet.',
+            'Install OpenSCAD (brew install --cask openscad on macOS — use Generate setup commands for other OSes).',
+            'Clone the repo, create a venv, pip install -e ., and copy .env.example to .env.',
+            'Set OPENAI_API_KEY in .env, then run ido open openscad.',
           ]}
           command="ido open openscad"
+          setupGenerator
         />
 
         <section className="workflow rule-section" id="docs">
           <div className="workflow-heading">
             <h2>One command surface.</h2>
-            <p>The same companion starts the API, opens tools, saves project state, and updates the pet.</p>
+            <p>The same companion starts the API, opens tools, and saves project state.</p>
           </div>
           <div className="command-list">
             <CopyCommand command='ido prompt --tool blender "make a compact enclosure"' />
             <CopyCommand command='ido prompt --tool openscad "add two M4 mounting holes"' />
-            <CopyCommand command="ido pet show" />
             <CopyCommand command="ido status" />
-          </div>
-          <div className="pet-feature">
-            <img src="./ido-pet.svg" alt="The original idō desktop companion" />
-            <div>
-              <h3>Prompt + status, wherever you work.</h3>
-              <p>The cross-platform pet opens either tool, accepts prompts, and reports generation, validation, rendering, and errors.</p>
-            </div>
           </div>
         </section>
 
