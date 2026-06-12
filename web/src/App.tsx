@@ -1,13 +1,13 @@
-import { FormEvent, useEffect, useState } from 'react'
+import { FormEvent, useEffect, useRef, useState } from 'react'
 
-const REPOSITORY = 'https://github.com/v1shay/ido'
+const REPOSITORY = 'https://github.com/arora13/Ido'
 const RELEASES = `${REPOSITORY}/releases/latest/download`
 const IS_LOCAL =
   typeof window !== 'undefined' &&
   ['localhost', '127.0.0.1'].includes(window.location.hostname)
 const BLENDER_ADDON = IS_LOCAL
-  ? '/downloads/cad_agent.zip'
-  : `${RELEASES}/cad_agent.zip`
+  ? '/downloads/ido_blender.zip'
+  : `${RELEASES}/ido_blender.zip`
 
 type Tool = 'blender' | 'openscad'
 type RuntimeStatus = {
@@ -16,6 +16,54 @@ type RuntimeStatus = {
   message: string
   artifacts: Record<string, string>
   recent_errors: string[]
+  provider?: string | null
+  inference_provider?: string | null
+  clickhouse_enabled?: boolean
+  clickhouse_exported?: boolean | null
+  request_id?: string | null
+}
+
+type IntegrationsStatus = {
+  provider: string
+  pioneer_configured: boolean
+  pioneer_model?: string | null
+  clickhouse_enabled: boolean
+  clickhouse_reachable?: boolean | null
+  clickhouse_table?: string | null
+  guild_enabled?: boolean
+  openui_active?: boolean
+  composio_enabled?: boolean
+  airbyte_enabled?: boolean
+  truefoundry_available?: boolean
+  render_blueprint?: boolean
+  capabilities?: string[]
+}
+
+type OpenUIElement = {
+  type: string
+  props?: {
+    text?: string
+    title?: string
+    emphasis?: boolean
+    body?: OpenUIElement[]
+  }
+}
+
+type SceneObject = { id: string; label: string; type?: string; shape?: string }
+
+type PromptResult = {
+  status?: string
+  error?: string
+  request_id?: string
+  provider?: string
+  scene_headline?: string
+  openui_elements?: OpenUIElement[]
+  clickhouse_exported?: boolean
+  airbyte_context_exported?: boolean
+  composio_status?: string | null
+  guild_trace_url?: string | null
+  ir?: { scene?: { objects?: SceneObject[] }; history?: string[] }
+  trace?: Array<{ step?: string; status?: string; metadata?: { inference_provider?: string } }>
 }
 
 const downloadLinks = [
@@ -23,6 +71,68 @@ const downloadLinks = [
   ['Windows', `${RELEASES}/ido-windows.exe`, 'Windows 10 and 11'],
   ['Linux', `${RELEASES}/ido-linux.AppImage`, 'AppImage'],
 ] as const
+
+function OpenUIPreview({ elements }: { elements: OpenUIElement[] }) {
+  if (!elements.length) return null
+  const renderElement = (element: OpenUIElement, index: number) => {
+    const text = element.props?.text ?? ''
+    if (element.type === 'Heading') {
+      return (
+        <strong key={index} className="openui-heading">
+          {text}
+        </strong>
+      )
+    }
+    if (element.type === 'Card') {
+      return (
+        <div key={index} className="openui-card">
+          {element.props?.title ? <span>{element.props.title}</span> : null}
+          {element.props?.body?.map((child, childIndex) =>
+            renderElement(child, childIndex),
+          )}
+        </div>
+      )
+    }
+    return (
+      <p
+        key={index}
+        className={element.props?.emphasis ? 'openui-emphasis' : undefined}
+      >
+        {text}
+      </p>
+    )
+  }
+  return (
+    <div className="openui-preview" aria-label="OpenUI preview">
+      {elements.map((element, index) => renderElement(element, index))}
+    </div>
+  )
+}
+
+function sponsorBadgeLabel(name: string, integrations: IntegrationsStatus | null): string {
+  if (!integrations) return '…'
+  switch (name) {
+    case 'OpenUI':
+      return integrations.openui_active ? 'active' : 'off'
+    case 'Guild':
+      return integrations.guild_enabled ? 'on' : 'off'
+    case 'ClickHouse':
+      if (!integrations.clickhouse_enabled) return 'off'
+      return integrations.clickhouse_reachable ? 'connected' : 'unreachable'
+    case 'Composio':
+      return integrations.composio_enabled ? 'on' : 'off'
+    case 'Airbyte':
+      return integrations.airbyte_enabled ? 'on' : 'off'
+    case 'Pioneer':
+      return integrations.pioneer_configured ? integrations.provider : 'not configured'
+    case 'Render':
+      return integrations.render_blueprint ? 'blueprint' : '—'
+    case 'TrueFoundry':
+      return integrations.truefoundry_available ? 'ready' : '—'
+    default:
+      return '—'
+  }
+}
 
 function ArrowIcon() {
   return (
@@ -120,7 +230,7 @@ function SetupSection({
         </ol>
         {tool === 'blender' ? (
           <a className="outline-button" href={BLENDER_ADDON}>
-            Download cad_agent.zip <ArrowIcon />
+            Download ido_blender.zip <ArrowIcon />
           </a>
         ) : null}
       </div>
@@ -145,6 +255,8 @@ function LocalControl() {
   const [tool, setTool] = useState<Tool>('blender')
   const [prompt, setPrompt] = useState('')
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
+  const [integrations, setIntegrations] = useState<IntegrationsStatus | null>(null)
+  const [lastResult, setLastResult] = useState<PromptResult | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const local = ['localhost', '127.0.0.1'].includes(window.location.hostname)
 
@@ -153,8 +265,14 @@ function LocalControl() {
     let active = true
     const refresh = async () => {
       try {
-        const response = await fetch('/api/status')
-        if (active && response.ok) setStatus(await response.json())
+        const [statusResponse, integrationsResponse] = await Promise.all([
+          fetch('/api/status'),
+          fetch('/api/integrations'),
+        ])
+        if (active && statusResponse.ok) setStatus(await statusResponse.json())
+        if (active && integrationsResponse.ok) {
+          setIntegrations(await integrationsResponse.json())
+        }
       } catch {
         // The static docs site deliberately has no local API.
       }
@@ -174,27 +292,64 @@ function LocalControl() {
     if (!prompt.trim()) return
     setSubmitting(true)
     const path = tool === 'openscad' ? '/api/openscad/prompt' : '/api/prompt'
+    const currentIr =
+      lastResult?.status === 'ok' && lastResult.ir ? lastResult.ir : null
     const payload =
       tool === 'openscad'
-        ? { prompt, current_ir: null }
-        : { prompt, current_ir: null, target_tool: 'blender' }
+        ? { prompt, current_ir: currentIr }
+        : { prompt, current_ir: currentIr, target_tool: 'blender' }
     try {
-      await fetch(path, {
+      const response = await fetch(path, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
       })
+      const body = await response.json()
+      setLastResult(body)
       setPrompt('')
     } finally {
       setSubmitting(false)
     }
   }
 
+  const objectLabels = lastResult?.ir?.scene?.objects?.map((item) => item.label) ?? []
+
+  const inferenceProvider =
+    status?.inference_provider ??
+    lastResult?.trace?.find(
+      (event) => event.step === 'parse' && event.status === 'completed',
+    )?.metadata?.inference_provider
+
   return (
     <section className="local-control rule-section" aria-label="Local companion controls">
       <div>
         <h2>Local companion</h2>
         <p>{status?.message ?? 'Connected to idō on this machine.'}</p>
+        <div className="integration-badges">
+          {(['OpenUI', 'Guild', 'ClickHouse', 'Composio', 'Airbyte', 'Pioneer', 'Render', 'TrueFoundry'] as const).map(
+            (name) => (
+              <span className="integration-badge" key={name}>
+                {name}: {sponsorBadgeLabel(name, integrations)}
+              </span>
+            ),
+          )}
+        </div>
+        {integrations?.capabilities?.length ? (
+          <ul className="sponsor-capabilities">
+            {integrations.capabilities.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        ) : null}
+        {(status?.provider || inferenceProvider || lastResult?.clickhouse_exported) && (
+          <div className="integration-meta">
+            {status?.provider && <span>Provider: {status.provider}</span>}
+            {inferenceProvider && <span>Inference: {inferenceProvider}</span>}
+            {lastResult?.clickhouse_exported && (
+              <span>ClickHouse: trace exported ({lastResult.request_id?.slice(0, 12)}…)</span>
+            )}
+          </div>
+        )}
       </div>
       <form onSubmit={submit}>
         <select value={tool} onChange={(event) => setTool(event.target.value as Tool)}>
@@ -204,15 +359,56 @@ function LocalControl() {
         <input
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
-          placeholder="Describe what to build"
+          placeholder="e.g. make a cozy bedroom, make a chair, make a desk"
         />
         <button disabled={submitting}>{submitting ? 'Working' : 'Prompt'}</button>
       </form>
+      {lastResult && (
+        <div className="prompt-result">
+          <strong>
+            {lastResult.status === 'ok'
+              ? lastResult.scene_headline ?? `Built ${objectLabels.length} objects`
+              : `Error: ${lastResult.error ?? lastResult.status}`}
+          </strong>
+          {lastResult.status === 'ok' && objectLabels.length > 0 && (
+            <p>{objectLabels.slice(0, 12).join(', ')}{objectLabels.length > 12 ? '…' : ''}</p>
+          )}
+          {lastResult.status === 'ok' && lastResult.openui_elements?.length ? (
+            <OpenUIPreview elements={lastResult.openui_elements} />
+          ) : null}
+        </div>
+      )}
     </section>
   )
 }
 
 export default function App() {
+  const introRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    const intro = introRef.current
+    if (!intro || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+
+    let frame = 0
+    const updateHero = () => {
+      frame = 0
+      const progress = Math.min(Math.max(window.scrollY / (window.innerHeight * 0.85), 0), 1)
+      intro.style.setProperty('--hero-progress', progress.toString())
+    }
+    const scheduleUpdate = () => {
+      if (!frame) frame = window.requestAnimationFrame(updateHero)
+    }
+
+    updateHero()
+    window.addEventListener('scroll', scheduleUpdate, { passive: true })
+    window.addEventListener('resize', scheduleUpdate)
+    return () => {
+      window.removeEventListener('scroll', scheduleUpdate)
+      window.removeEventListener('resize', scheduleUpdate)
+      if (frame) window.cancelAnimationFrame(frame)
+    }
+  }, [])
+
   return (
     <>
       <header className="site-header">
@@ -220,11 +416,10 @@ export default function App() {
           idō
         </a>
         <nav aria-label="Primary navigation">
-          <a href="/info/#pipeline">Overview</a>
-          <a href="#download">Download</a>
-          <a href="#blender">Blender</a>
-          <a href="#openscad">OpenSCAD</a>
-          <a href="#docs">Docs</a>
+          <a href="#overview">Overview</a>
+          <a href="#pipeline">Pipeline</a>
+          <a href="#tools">Tools</a>
+          <a href="#blender">Setup</a>
         </nav>
         <a className="header-cta" href="#download">
           Get idō
@@ -232,7 +427,95 @@ export default function App() {
       </header>
 
       <main id="top">
-        <section className="hero">
+        <section className="intro-hero" ref={introRef}>
+          <div className="perspective-grid" aria-hidden="true">
+            <span className="grid-plane grid-ceiling" />
+            <span className="grid-plane grid-floor" />
+          </div>
+          <div className="intro-content">
+            <p className="intro-kicker">Universal agent harness for 3D design</p>
+            <h1 aria-label="idō">i d ō</h1>
+            <p className="intro-tagline">
+              Say what you want to build. <em>Watch it appear</em> as native,
+              editable objects in the tools you already use.
+            </p>
+            <p className="intro-description">
+              idō turns natural language into validated Engineering IR and builds it
+              live in Blender and OpenSCAD. Local-first: your prompts, files, and
+              geometry stay on your machine.
+            </p>
+            <div className="intro-actions">
+              <a className="solid-button" href="#download">
+                Get idō <ArrowIcon />
+              </a>
+              <a className="outline-button" href="#blender">
+                Open setup
+              </a>
+              <a className="outline-button" href={REPOSITORY}>
+                GitHub
+              </a>
+            </div>
+          </div>
+          <a className="scroll-cue" href="#overview">Scroll to initialize</a>
+        </section>
+
+        <section className="overview-section rule-section" id="overview">
+          <div>
+            <small>OVERVIEW</small>
+            <h2>One prompt.<br /><em>Real geometry.</em></h2>
+            <p>
+              idō is an AI agent that speaks CAD. A natural-language request becomes
+              a structured, validated scene built object by object in your viewport.
+            </p>
+          </div>
+          <ol className="feature-list">
+            <li>
+              <span>01</span>
+              <div>
+                <strong>Native, editable objects</strong>
+                <p>Every object lands as a real primitive with explicit dimensions.</p>
+              </div>
+            </li>
+            <li>
+              <span>02</span>
+              <div>
+                <strong>Code you can touch</strong>
+                <p>Inspect and revise the generated scene without giving up control.</p>
+              </div>
+            </li>
+            <li>
+              <span>03</span>
+              <div>
+                <strong>Iterative by design</strong>
+                <p>Follow-up prompts update the current design instead of starting over.</p>
+              </div>
+            </li>
+          </ol>
+        </section>
+
+        <section className="pipeline-section rule-section" id="pipeline">
+          <div className="pipeline-heading">
+            <small>PIPELINE</small>
+            <h2>Every request flows through <em>four stages.</em></h2>
+            <p>Nothing reaches a CAD tool until the generated Engineering IR validates.</p>
+          </div>
+          <div className="pipeline-grid">
+            {[
+              ['01', 'Parse', 'Turn the prompt and current project state into Engineering IR.'],
+              ['02', 'Validate', 'Check dimensions, operations, labels, and references against the schema.'],
+              ['03', 'Route', 'Send the validated IR to the Blender or OpenSCAD adapter.'],
+              ['04', 'Execute', 'Build editable objects or write SCAD and export production artifacts.'],
+            ].map(([number, title, description]) => (
+              <article key={number}>
+                <span>{number} /</span>
+                <h3>{title}</h3>
+                <p>{description}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="builder-section" id="tools">
           <div className="hero-heading">
             <h1>Choose how you build.</h1>
             <p>
@@ -343,7 +626,7 @@ export default function App() {
             ))}
             <a href={BLENDER_ADDON}>
               <strong>Blender add-on</strong>
-              <span>cad_agent.zip</span>
+              <span>ido_blender.zip</span>
               <ArrowIcon />
             </a>
           </div>
