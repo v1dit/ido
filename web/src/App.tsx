@@ -2,12 +2,8 @@ import { FormEvent, useEffect, useRef, useState } from 'react'
 
 const REPOSITORY = 'https://github.com/arora13/Ido'
 const RELEASES = `${REPOSITORY}/releases/latest/download`
-const IS_LOCAL =
-  typeof window !== 'undefined' &&
-  ['localhost', '127.0.0.1'].includes(window.location.hostname)
-const BLENDER_ADDON = IS_LOCAL
-  ? '/downloads/ido_blender.zip'
-  : `${RELEASES}/ido_blender.zip`
+// Served by the FastAPI backend on ido serve and Render (see /downloads/ido_blender.zip).
+const BLENDER_ADDON = '/downloads/ido_blender.zip'
 
 type Tool = 'blender' | 'openscad'
 type RuntimeStatus = {
