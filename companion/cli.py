@@ -38,9 +38,6 @@ def build_parser() -> argparse.ArgumentParser:
     prompt_parser.add_argument("--tool", required=True, choices=["blender", "openscad"])
     prompt_parser.add_argument("prompt", nargs="+")
 
-    pet_parser = subcommands.add_parser("pet", help="Show or hide the desktop pet")
-    pet_parser.add_argument("action", choices=["show", "hide"])
-
     subcommands.add_parser("status", help="Print companion status")
     subcommands.add_parser("serve", help="Run the local API in the foreground")
     subcommands.add_parser("reset", help="Start a fresh project (clears stored IR and outputs)")
@@ -94,12 +91,6 @@ def main(argv: list[str] | None = None) -> int:
         payload = prompt(args.tool, " ".join(args.prompt))
         print(json.dumps(payload, indent=2))
         return 0 if payload.get("status") == "ok" else 1
-    if args.command == "pet":
-        visible = args.action == "show"
-        _request("POST", "/api/pet/visibility", {"visible": visible})
-        if visible:
-            start_pet()
-        return 0
     if args.command == "status":
         print(json.dumps(_request("GET", "/api/status"), indent=2))
         return 0
@@ -205,19 +196,6 @@ def ensure_backend(timeout: float = 12.0) -> None:
             return
         time.sleep(0.2)
     raise RuntimeError(f"idō backend did not start; see {LOG_PATH}")
-
-
-def start_pet() -> None:
-    try:
-        subprocess.Popen(
-            [sys.executable, "-m", "companion.pet"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except OSError as exc:
-        raise RuntimeError(f"Could not start the idō pet: {exc}") from exc
 
 
 def _healthy() -> bool:
