@@ -1,0 +1,1 @@
+"""Local idō desktop companion."""

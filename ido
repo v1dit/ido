@@ -1,0 +1,4 @@
+#!/usr/bin/env python3
+from companion.cli import main
+
+raise SystemExit(main())
