@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from companion.platforms import launch_blender, launch_openscad, open_url
+from companion.platforms import blender_executable, launch_blender, launch_openscad, open_url
 
 API_URL = os.getenv("IDO_API_URL", "http://127.0.0.1:8010").rstrip("/")
 STATE_DIR = Path(os.getenv("IDO_STATE_DIR", str(Path.home() / ".ido")))
@@ -21,6 +21,7 @@ PROJECT_DIR = Path(
 IR_PATH = PROJECT_DIR / "ido_current.ir.json"
 SCAD_PATH = PROJECT_DIR / "ido_current.scad"
 LOG_PATH = STATE_DIR / "companion.log"
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,6 +44,24 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands.add_parser("status", help="Print companion status")
     subcommands.add_parser("serve", help="Run the local API in the foreground")
     subcommands.add_parser("reset", help="Start a fresh project (clears stored IR and outputs)")
+
+    subcommands.add_parser("integrations", help="Show hackathon sponsor integration status")
+    subcommands.add_parser("sponsors", help="Show sponsor capabilities (alias for integrations)")
+    subcommands.add_parser("analytics", help="Show recent ClickHouse trace analytics")
+
+    render_parser = subcommands.add_parser("render", help="Headless Blender build")
+    render_parser.add_argument("--tool", required=True, choices=["blender"])
+    render_parser.add_argument("prompt", nargs="+")
+    render_parser.add_argument(
+        "--follow-up",
+        nargs="+",
+        help="Second prompt using the IR from the first response",
+    )
+    render_parser.add_argument(
+        "--output",
+        help="Path for the saved .blend file",
+        default=None,
+    )
     return parser
 
 
@@ -84,7 +103,56 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "status":
         print(json.dumps(_request("GET", "/api/status"), indent=2))
         return 0
+    if args.command == "integrations" or args.command == "sponsors":
+        payload = _request("GET", "/api/integrations")
+        print(json.dumps(payload, indent=2))
+        capabilities = payload.get("capabilities") or []
+        if capabilities:
+            print("\nCapabilities:")
+            for item in capabilities:
+                print(f"  • {item}")
+        return 0
+    if args.command == "analytics":
+        print(json.dumps(_request("GET", "/api/analytics/traces?limit=10"), indent=2))
+        return 0
+    if args.command == "render":
+        return render_blender(
+            " ".join(args.prompt),
+            " ".join(args.follow_up) if args.follow_up else None,
+            Path(args.output).resolve() if args.output else None,
+        )
     return 2
+
+
+def render_blender(
+    prompt_text: str,
+    follow_up: str | None,
+    output: Path | None,
+) -> int:
+    first = prompt("blender", prompt_text)
+    if first.get("status") != "ok":
+        print(json.dumps(first, indent=2))
+        return 1
+    env = os.environ.copy()
+    env["CAD_AGENT_BACKEND_URL"] = API_URL
+    env["CAD_AGENT_PROMPT"] = prompt_text
+    if follow_up:
+        env["CAD_AGENT_FOLLOW_UP"] = follow_up
+    if output is not None:
+        env["CAD_AGENT_BLEND_OUTPUT"] = str(output)
+    script = ROOT / "scripts" / "blender_render.py"
+    result = subprocess.run(
+        [
+            blender_executable(),
+            "--background",
+            "--factory-startup",
+            "--python",
+            str(script),
+        ],
+        env=env,
+        check=False,
+    )
+    return result.returncode
 
 
 def prompt(tool: str, text: str) -> dict[str, Any]:
@@ -104,6 +172,17 @@ def prompt(tool: str, text: str) -> dict[str, Any]:
     if payload.get("status") == "ok" and payload.get("ir"):
         PROJECT_DIR.mkdir(parents=True, exist_ok=True)
         IR_PATH.write_text(json.dumps(payload["ir"], indent=2), encoding="utf-8")
+    if payload.get("clickhouse_exported"):
+        print(
+            f"ClickHouse: exported trace for {payload.get('request_id', 'request')}",
+            file=sys.stderr,
+        )
+    for event in payload.get("trace") or []:
+        if event.get("step") == "parse" and event.get("status") == "completed":
+            inference = (event.get("metadata") or {}).get("inference_provider")
+            if inference:
+                print(f"Inference: {inference}", file=sys.stderr)
+            break
     return payload
 
 

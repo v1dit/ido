@@ -27,6 +27,13 @@ class PromptResponse(ContractModel):
     request_id: str
     provider: str
     trace: list["TraceEvent"] = Field(default_factory=list)
+    guild_trace_url: str | None = None
+    openui_lang: str | None = None
+    openui_elements: list[dict[str, Any]] = Field(default_factory=list)
+    scene_headline: str | None = None
+    clickhouse_exported: bool = False
+    composio_status: str | None = None
+    airbyte_context_exported: bool = False
 
 
 class ExecutionReport(ContractModel):
@@ -35,6 +42,18 @@ class ExecutionReport(ContractModel):
     status: Literal["ok", "error"]
     duration_ms: float = Field(ge=0)
     error: str | None = None
+
+
+class ExecutionResponse(ContractModel):
+    event: "TraceEvent"
+    trace: list["TraceEvent"] = Field(default_factory=list)
+    guild_trace_url: str | None = None
+    openui_lang: str | None = None
+    openui_elements: list[dict[str, Any]] = Field(default_factory=list)
+    scene_headline: str | None = None
+    clickhouse_exported: bool = False
+    composio_status: str | None = None
+    airbyte_context_exported: bool = False
 
 
 class TraceEvent(ContractModel):
@@ -88,11 +107,46 @@ class RuntimeStatus(ContractModel):
     artifacts: dict[str, str] = Field(default_factory=dict)
     recent_errors: list[str] = Field(default_factory=list)
     pet_visible: bool = True
+    provider: str | None = None
+    inference_provider: str | None = None
+    clickhouse_enabled: bool = False
+    clickhouse_exported: bool | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class PetVisibilityRequest(ContractModel):
     visible: bool
+
+
+class IntegrationsStatus(ContractModel):
+    provider: str
+    pioneer_configured: bool = False
+    pioneer_model: str | None = None
+    clickhouse_enabled: bool = False
+    clickhouse_reachable: bool | None = None
+    clickhouse_table: str | None = None
+    guild_enabled: bool = False
+    openui_active: bool = True
+    composio_enabled: bool = False
+    airbyte_enabled: bool = False
+    truefoundry_available: bool = False
+    render_blueprint: bool = False
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class TraceAnalyticsRow(ContractModel):
+    request_id: str
+    step: str
+    status: str
+    duration_ms: float | None = None
+    prompt: str | None = None
+    target_tool: str | None = None
+    exported_at: str | None = None
+
+
+class TraceAnalyticsResponse(ContractModel):
+    enabled: bool
+    rows: list[TraceAnalyticsRow] = Field(default_factory=list)
 
 
 def new_request_id() -> str:

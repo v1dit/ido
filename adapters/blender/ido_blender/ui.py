@@ -8,9 +8,22 @@ import bpy
 from bpy.props import BoolProperty, PointerProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup
 
+from .harness import _persist_sponsor_metadata
 from .client import BackendClient
 from .executor import clear_generated, execute_ir, iter_execute
-from .state import clear_ir, load_ir, save_ir
+from .state import (
+    clear_ir,
+    load_airbyte_context_exported,
+    load_clickhouse_exported,
+    load_composio_status,
+    load_guild_trace_url,
+    load_ir,
+    load_openui_lang,
+    load_trace,
+    save_ir,
+    save_trace,
+)
+from .trace_timeline import format_trace_timeline, summarize_trace
 
 CODE_TEXT_NAME = "ido_code.json"
 PREVIEW_LINES = 14
@@ -23,8 +36,28 @@ class IdoProperties(PropertyGroup):
     is_generating: BoolProperty(name="Generating", default=False)
     show_settings: BoolProperty(name="Settings", default=False)
     code_preview: StringProperty(name="Code Preview", default="")
+    auto_open_guild: BoolProperty(
+        name="Auto-open Guild after generate",
+        default=True,
+        description="Open the Guild trace view in your browser after a successful generate",
+    )
 
 
+def _open_guild_url(context, url: str) -> None:
+    bpy.ops.wm.url_open(url=url)
+    context.scene.ido.status = "Opened Guild trace view"
+
+
+def _save_response_metadata(scene, response: dict[str, object], trace: list[dict[str, object]]) -> None:
+    save_trace(
+        scene,
+        trace,
+        guild_trace_url=response.get("guild_trace_url"),  # type: ignore[arg-type]
+        openui_lang=response.get("openui_lang"),  # type: ignore[arg-type]
+        composio_status=response.get("composio_status"),  # type: ignore[arg-type]
+        clickhouse_exported=response.get("clickhouse_exported"),  # type: ignore[arg-type]
+        airbyte_context_exported=response.get("airbyte_context_exported"),  # type: ignore[arg-type]
+    )
 class IDO_OT_generate(Operator):
     bl_idname = "ido.generate"
     bl_label = "Generate"
@@ -137,8 +170,17 @@ class IDO_OT_generate(Operator):
         save_ir(context.scene, response["ir"], request_id)
         _write_code_text(response["ir"])
         duration_ms = (perf_counter() - self._started) * 1000
-        self._report_execution(properties, request_id, "ok", duration_ms)
+        execution = self._report_execution(properties, request_id, "ok", duration_ms)
+        trace = list(response.get("trace", []))
+        guild_trace_url = response.get("guild_trace_url")
+        if execution:
+            trace = execution.get("trace", trace)
+            guild_trace_url = execution.get("guild_trace_url") or guild_trace_url
+            response = execution
+        _persist_sponsor_metadata(context.scene, self._response or {}, execution)
         properties.status = f"Done - {self._count} objects in {duration_ms / 1000:.0f}s"
+        if guild_trace_url and properties.auto_open_guild:
+            _open_guild_url(context, guild_trace_url)
         self._cleanup(context)
         return {"FINISHED"}
 
@@ -146,7 +188,13 @@ class IDO_OT_generate(Operator):
         properties = context.scene.ido
         request_id = (self._result or {}).get("response", {}).get("request_id")
         duration_ms = (perf_counter() - self._started) * 1000
-        self._report_execution(properties, request_id, "error", duration_ms, message)
+        execution = self._report_execution(properties, request_id, "error", duration_ms, message)
+        if execution:
+            _persist_sponsor_metadata(
+                context.scene,
+                (self._result or {}).get("response", {}),
+                execution,
+            )
         properties.status = f"Error: {message}"
         self.report({"ERROR"}, message)
         self._cleanup(context)
@@ -159,18 +207,18 @@ class IDO_OT_generate(Operator):
         status: str,
         duration_ms: float,
         error: str | None = None,
-    ) -> None:
+    ) -> dict | None:
         if not request_id:
-            return
+            return None
         try:
-            BackendClient(properties.backend_url, timeout=10.0).report_execution(
+            return BackendClient(properties.backend_url, timeout=10.0).report_execution(
                 request_id=request_id,
                 status=status,
                 duration_ms=duration_ms,
                 error=error,
             )
         except Exception:
-            pass
+            return None
 
     def _cleanup(self, context) -> None:
         context.scene.ido.is_generating = False
@@ -253,6 +301,64 @@ class IDO_OT_reset(Operator):
         return {"FINISHED"}
 
 
+class IDO_OT_show_trace(Operator):
+    bl_idname = "ido.show_trace"
+    bl_label = "Show Request Timeline"
+    bl_description = "Show parse, validate, route, and execute timings for the last request"
+
+    def execute(self, context):
+        trace = load_trace(context.scene)
+        if not trace:
+            self.report({"WARNING"}, "No trace is available yet")
+            return {"CANCELLED"}
+
+        request_id = context.scene.get("cad_agent_last_request_id")
+        text = bpy.data.texts.get("idō Trace") or bpy.data.texts.new("idō Trace")
+        text.clear()
+        text.write(format_trace_timeline(trace, request_id=request_id))
+        for area in context.screen.areas:
+            if area.type == "TEXT_EDITOR":
+                area.spaces.active.text = text
+                break
+        self.report({"INFO"}, "Request timeline loaded in Text Editor")
+        return {"FINISHED"}
+
+
+class IDO_OT_show_openui(Operator):
+    bl_idname = "ido.show_openui"
+    bl_label = "Show OpenUI Lang"
+    bl_description = "Open the OpenUI Lang generative UI description for the last request"
+
+    def execute(self, context):
+        openui_lang = load_openui_lang(context.scene)
+        if not openui_lang:
+            self.report({"WARNING"}, "No OpenUI Lang is available yet")
+            return {"CANCELLED"}
+        text = bpy.data.texts.get("idō OpenUI") or bpy.data.texts.new("idō OpenUI")
+        text.clear()
+        text.write(openui_lang)
+        for area in context.screen.areas:
+            if area.type == "TEXT_EDITOR":
+                area.spaces.active.text = text
+                break
+        self.report({"INFO"}, "OpenUI Lang loaded in Text Editor")
+        return {"FINISHED"}
+
+
+class IDO_OT_open_guild(Operator):
+    bl_idname = "ido.open_guild"
+    bl_label = "Open in Guild"
+    bl_description = "Open the last request trace in Guild"
+
+    def execute(self, context):
+        guild_trace_url = load_guild_trace_url(context.scene)
+        if not guild_trace_url:
+            self.report({"WARNING"}, "No Guild trace URL is available for this request")
+            return {"CANCELLED"}
+        _open_guild_url(context, guild_trace_url)
+        return {"FINISHED"}
+
+
 class IDO_PT_sidebar(Panel):
     bl_label = "idō"
     bl_idname = "IDO_PT_sidebar"
@@ -298,6 +404,38 @@ class IDO_PT_sidebar(Panel):
         code_row.operator("ido.view_code", text="View", icon="HIDE_OFF")
         code_row.operator("ido.apply_code", text="Apply", icon="FILE_REFRESH")
 
+        trace_row = layout.row(align=True)
+        trace_row.operator("ido.show_trace", text="Timeline", icon="TIME")
+        trace_row.operator("ido.show_openui", text="OpenUI", icon="UI")
+        trace_row.operator("ido.open_guild", text="Guild", icon="URL")
+
+        trace = load_trace(context.scene)
+        if trace:
+            box = layout.box()
+            box.label(text="Last Request Timeline", icon="TIME")
+            request_id = context.scene.get("cad_agent_last_request_id")
+            if request_id:
+                box.label(text=f"Request: {request_id[:12]}...")
+            for item in summarize_trace(trace):
+                duration = item["duration_ms"]
+                duration_text = f"{duration:.1f} ms" if duration is not None else "pending"
+                row = box.row()
+                row.label(text=f"{item['step']}: {item['status']} ({duration_text})")
+
+            sponsors = layout.box()
+            sponsors.label(text="Sponsor Integrations", icon="LINKED")
+            if load_guild_trace_url(context.scene):
+                sponsors.label(text="Guild: trace exported")
+            if load_openui_lang(context.scene):
+                sponsors.label(text="OpenUI: lang ready")
+            if load_clickhouse_exported(context.scene):
+                sponsors.label(text="ClickHouse: trace stored")
+            if load_airbyte_context_exported(context.scene):
+                sponsors.label(text="Airbyte: context synced")
+            composio_status = load_composio_status(context.scene)
+            if composio_status:
+                sponsors.label(text=f"Composio: {composio_status}")
+
         layout.separator()
         layout.operator("ido.reset", icon="TRASH")
 
@@ -312,6 +450,7 @@ class IDO_PT_sidebar(Panel):
         )
         if properties.show_settings:
             layout.prop(properties, "backend_url")
+            layout.prop(properties, "auto_open_guild")
 
 
 def _write_code_text(ir: dict) -> bpy.types.Text:
@@ -353,6 +492,9 @@ CLASSES = (
     IDO_OT_view_code,
     IDO_OT_apply_code,
     IDO_OT_reset,
+    IDO_OT_show_trace,
+    IDO_OT_show_openui,
+    IDO_OT_open_guild,
     IDO_PT_sidebar,
 )
 

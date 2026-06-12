@@ -55,11 +55,17 @@ class OpenAIProvider:
         api_key: str | None = None,
         model: str | None = None,
         client: AsyncOpenAI | None = None,
+        base_url: str | None = None,
     ) -> None:
         resolved_key = api_key or os.getenv("OPENAI_API_KEY")
         if client is None and not resolved_key:
             raise IRGenerationError("OPENAI_API_KEY is not configured")
-        self._client = client or AsyncOpenAI(api_key=resolved_key)
+        if client is None:
+            client_kwargs: dict[str, str] = {"api_key": resolved_key}
+            if base_url:
+                client_kwargs["base_url"] = base_url
+            client = AsyncOpenAI(**client_kwargs)
+        self._client = client
         self._model = model or os.getenv("OPENAI_MODEL", "gpt-5.5")
 
     async def generate(

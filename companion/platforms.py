@@ -21,10 +21,23 @@ def launch_blender() -> None:
     if system == "Darwin":
         _run(["open", "-a", "Blender"])
     elif system == "Windows":
-        executable = shutil.which("blender") or _windows_app("Blender Foundation", "Blender", "blender.exe")
-        _run([executable])
+        _run([blender_executable()])
     else:
-        _run([shutil.which("blender") or "blender"])
+        _run([blender_executable()])
+
+
+def blender_executable() -> str:
+    system = platform.system()
+    if system == "Darwin":
+        app = Path("/Applications/Blender.app/Contents/MacOS/Blender")
+        if app.is_file():
+            return str(app)
+        return "blender"
+    if system == "Windows":
+        return shutil.which("blender") or _windows_app(
+            "Blender Foundation", "Blender", "blender.exe"
+        )
+    return shutil.which("blender") or "blender"
 
 
 def launch_openscad(scad_path: Path) -> None:

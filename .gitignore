@@ -13,7 +13,9 @@ cad_agent_backend.egg-info/
 blender-smoke-test.blend
 *.blend1
 adapters/blender/*.zip
+airbyte/context/
 /cad_agent.zip
+/ido_blender.zip
 web/node_modules/
 web/dist/
 *.tsbuildinfo

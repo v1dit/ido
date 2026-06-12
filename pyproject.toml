@@ -27,6 +27,9 @@ dev = [
   "pytest>=8.3,<10",
   "pytest-cov>=6,<8",
 ]
+sponsors = [
+  "composio>=0.9",
+]
 
 [project.scripts]
 ido = "companion.cli:main"

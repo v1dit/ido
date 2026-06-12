@@ -49,6 +49,17 @@ def test_openscad_api_returns_source_even_without_cli(monkeypatch, tmp_path: Pat
     assert payload["status"] == "ok"
     assert payload["execution"]["scad_path"].endswith("ido_current.scad")
     assert "module main_body()" in payload["execution"]["scad_source"]
+    assert "Stack(" in payload["openui_lang"]
+    assert [event["step"] for event in payload["trace"]] == [
+        "parse",
+        "parse",
+        "validate",
+        "validate",
+        "route",
+        "route",
+        "execute",
+        "execute",
+    ]
     assert client.get("/api/status").json()["tool"] == "openscad"
 
 

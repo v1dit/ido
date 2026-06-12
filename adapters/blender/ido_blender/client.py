@@ -53,12 +53,15 @@ class BackendClient:
             },
         )
 
+    def get_trace(self, request_id: str) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/traces/{request_id}")
+
     def _request(
         self,
         method: str,
         path: str,
         payload: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | list[dict[str, Any]]:
         body = None if payload is None else json.dumps(payload).encode("utf-8")
         request = Request(
             f"{self.base_url}{path}",
@@ -78,4 +81,3 @@ class BackendClient:
             ) from exc
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise BackendError("Backend returned an invalid JSON response") from exc
-

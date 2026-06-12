@@ -11,8 +11,8 @@ sys.path.insert(0, str(ROOT / "adapters" / "blender"))
 
 import ido_blender  # noqa: E402
 from ido_blender.client import BackendClient  # noqa: E402
-from ido_blender.executor import execute_ir  # noqa: E402
-from ido_blender.state import load_ir, save_ir  # noqa: E402
+from ido_blender.harness import prompt_execute_and_report  # noqa: E402
+from ido_blender.state import load_ir  # noqa: E402
 
 
 def main() -> None:
@@ -23,17 +23,17 @@ def main() -> None:
     client = BackendClient(backend_url)
     ido_blender.register()
 
-    first = client.prompt("make a house", None)
-    assert first["status"] == "ok", first
-    first_count = execute_ir(bpy.context, first["ir"])
-    save_ir(bpy.context.scene, first["ir"], first["request_id"])
+    first, first_execution, first_count = prompt_execute_and_report(
+        client, bpy.context, "make a house", None
+    )
     body_pointer = bpy.data.objects["CAD_main_body"].as_pointer()
 
-    second = client.prompt("add more windows", load_ir(bpy.context.scene))
-    assert second["status"] == "ok", second
-    second_count = execute_ir(bpy.context, second["ir"])
-    save_ir(bpy.context.scene, second["ir"], second["request_id"])
+    second, second_execution, second_count = prompt_execute_and_report(
+        client, bpy.context, "add more windows", load_ir(bpy.context.scene)
+    )
 
+    assert first["status"] == "ok", first
+    assert second["status"] == "ok", second
     assert first_count == 5
     assert second_count == 9
     assert bpy.data.objects["CAD_main_body"].as_pointer() == body_pointer
@@ -41,6 +41,10 @@ def main() -> None:
         "make a house",
         "add more windows",
     ]
+    assert first_execution is not None
+    assert second_execution is not None
+    assert first_execution["event"]["step"] == "execute"
+    assert second_execution["event"]["step"] == "execute"
 
     bpy.ops.wm.save_as_mainfile(filepath=str(output_path))
     bpy.ops.wm.open_mainfile(filepath=str(output_path))

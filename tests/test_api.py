@@ -1,5 +1,8 @@
-from fastapi.testclient import TestClient
+from unittest.mock import AsyncMock
 
+from fastapi.testclient import TestClient
+from backend.clickhouse_exporter import ClickHouseExportResult, NullClickHouseTraceExporter
+from backend.guild_exporter import GuildExportResult, NullGuildTraceExporter
 from backend.main import create_app
 from backend.providers.base import IRGenerationError
 from backend.providers.fallback import DeterministicProvider
@@ -10,6 +13,39 @@ class FailingProvider:
 
     async def generate(self, _prompt, _current_ir):
         raise IRGenerationError("provider unavailable")
+
+
+class RecordingGuildExporter(NullGuildTraceExporter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[str, list]] = []
+        self.export = AsyncMock(side_effect=self._export)
+
+    async def _export(self, request_id, events, *, prompt=None, target_tool=None, scene_snapshot=None):
+        self.calls.append((request_id, list(events)))
+        return GuildExportResult(
+            exported=True,
+            trace_view_url=f"https://app.guild.ai/sessions/{request_id}",
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return True
+
+
+class RecordingClickHouseExporter(NullClickHouseTraceExporter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[str, list]] = []
+        self.export = AsyncMock(side_effect=self._export)
+
+    async def _export(self, request_id, events, *, prompt=None, target_tool=None, scene_snapshot=None):
+        self.calls.append((request_id, list(events)))
+        return ClickHouseExportResult(exported=True, rows=len(events))
+
+    @property
+    def enabled(self) -> bool:
+        return True
 
 
 def test_health_and_iterative_prompt_flow() -> None:
@@ -61,6 +97,24 @@ def test_provider_error_is_returned_without_server_exception() -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "error"
     assert response.json()["error"] == "provider unavailable"
+    assert "Stack(" in response.json()["openui_lang"]
+
+
+def test_prompt_returns_openui_elements_and_scene_headline() -> None:
+    client = TestClient(create_app(provider=DeterministicProvider()))
+    response = client.post(
+        "/api/prompt",
+        json={
+            "prompt": "make a chair",
+            "current_ir": None,
+            "target_tool": "blender",
+        },
+    ).json()
+    assert response["status"] == "ok"
+    assert response["scene_headline"]
+    assert "chair" in response["scene_headline"].lower()
+    assert len(response["openui_elements"]) >= 2
+    assert response["openui_elements"][0]["type"] == "Heading"
 
 
 def test_execution_report_completes_trace() -> None:
@@ -85,5 +139,93 @@ def test_execution_report_completes_trace() -> None:
         },
     )
 
-    assert response.json()["step"] == "execute"
-    assert response.json()["status"] == "completed"
+    payload = response.json()
+    assert payload["event"]["step"] == "execute"
+    assert payload["event"]["status"] == "completed"
+    assert payload["trace"][-1]["step"] == "execute"
+
+
+def test_guild_exporter_runs_after_prompt_and_execution() -> None:
+    guild_exporter = RecordingGuildExporter()
+    client = TestClient(
+        create_app(provider=DeterministicProvider(), guild_exporter=guild_exporter)
+    )
+
+    generated = client.post(
+        "/api/prompt",
+        json={
+            "prompt": "make a house",
+            "current_ir": None,
+            "target_tool": "blender",
+        },
+    ).json()
+    request_id = generated["request_id"]
+    assert generated["guild_trace_url"] == f"https://app.guild.ai/sessions/{request_id}"
+
+    execution = client.post(
+        "/api/execution",
+        json={
+            "request_id": request_id,
+            "target_tool": "blender",
+            "status": "ok",
+            "duration_ms": 42.0,
+            "error": None,
+        },
+    ).json()
+
+    assert execution["guild_trace_url"] == f"https://app.guild.ai/sessions/{request_id}"
+    assert len(guild_exporter.calls) == 2
+    assert guild_exporter.calls[1][1][-1].step == "execute"
+
+
+def test_clickhouse_exporter_runs_after_prompt_and_execution() -> None:
+    clickhouse_exporter = RecordingClickHouseExporter()
+    client = TestClient(
+        create_app(
+            provider=DeterministicProvider(),
+            clickhouse_exporter=clickhouse_exporter,
+        )
+    )
+
+    generated = client.post(
+        "/api/prompt",
+        json={
+            "prompt": "make a house",
+            "current_ir": None,
+            "target_tool": "blender",
+        },
+    ).json()
+    request_id = generated["request_id"]
+    assert generated["clickhouse_exported"] is True
+
+    execution = client.post(
+        "/api/execution",
+        json={
+            "request_id": request_id,
+            "target_tool": "blender",
+            "status": "ok",
+            "duration_ms": 18.0,
+            "error": None,
+        },
+    ).json()
+
+    assert execution["clickhouse_exported"] is True
+    assert len(clickhouse_exporter.calls) == 2
+    assert clickhouse_exporter.calls[0][1][0].step == "parse"
+    assert clickhouse_exporter.calls[1][1][-1].step == "execute"
+
+
+def test_prompt_includes_openui_lang() -> None:
+    client = TestClient(create_app(provider=DeterministicProvider()))
+    response = client.post(
+        "/api/prompt",
+        json={
+            "prompt": "make a house",
+            "current_ir": None,
+            "target_tool": "blender",
+        },
+    ).json()
+
+    assert response["status"] == "ok"
+    assert "Stack(" in response["openui_lang"]
+    assert "make a house" in response["openui_lang"]

@@ -4,7 +4,14 @@ from pathlib import Path
 import pytest
 
 from adapters.blender.ido_blender.planner import PlanningError, plan_scene
-from adapters.blender.ido_blender.state import clear_ir, load_ir, save_ir
+from adapters.blender.ido_blender.state import (
+    clear_ir,
+    load_guild_trace_url,
+    load_ir,
+    load_trace,
+    save_ir,
+    save_trace,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "house_ir.json"
 
@@ -58,13 +65,18 @@ def test_planner_rejects_unresolved_graph() -> None:
 def test_scene_state_round_trip_and_clear() -> None:
     scene = {}
     ir = load_house()
+    trace = [{"step": "parse", "status": "completed", "duration_ms": 1.0}]
 
     save_ir(scene, ir, "request-id")
+    save_trace(scene, trace, guild_trace_url="https://app.guild.ai/sessions/request-id")
 
     assert load_ir(scene) == ir
     assert scene["cad_agent_last_request_id"] == "request-id"
+    assert load_trace(scene) == trace
+    assert load_guild_trace_url(scene) == "https://app.guild.ai/sessions/request-id"
     clear_ir(scene)
     assert load_ir(scene) is None
+    assert load_trace(scene) == []
 
 
 def test_invalid_persisted_state_is_ignored() -> None:

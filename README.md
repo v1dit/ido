@@ -87,5 +87,124 @@ The same build is deployed to GitHub Pages and served by the local companion.
 cd web && npm run lint && npm run build
 ```
 
+Run the exact two-prompt flow in headless Blender while the backend is running:
+
+```bash
+ido render blender "make a house" --follow-up "add more windows"
+# or directly:
+/Applications/Blender.app/Contents/MacOS/Blender \
+  --background --factory-startup --python scripts/blender_smoke.py
+```
+
 GitHub Actions tests Python on macOS, Windows, and Linux, deploys Pages from
 `main`, and creates companion plus Blender add-on artifacts for version tags.
+
+## TrueFoundry
+
+The backend includes a Dockerfile and `deploy_truefoundry.py`. Install and
+authenticate the current TrueFoundry CLI/SDK:
+
+```bash
+.venv/bin/pip install truefoundry
+export TFY_HOST=https://your-org.truefoundry.cloud
+export TFY_API_KEY=your-token
+export TFY_WORKSPACE_FQN=your-workspace-fqn
+export TFY_SERVICE_HOST=cad-agent-api.your-domain.example
+export OPENAI_API_KEY=your-openai-key
+.venv/bin/python deploy_truefoundry.py
+```
+
+The token values remain local environment variables and must never be committed.
+The application emits structured `parse`, `validate`, `route`, and `execute`
+events that are forwarded to Guild when trace export is enabled.
+
+## Guild AI
+
+Enable OpenTelemetry trace export to Guild after each prompt and execution
+report:
+
+```bash
+export GUILD_TRACE_ENABLED=true
+export GUILD_OTLP_ENDPOINT=https://your-guild-collector/v1/traces
+export GUILD_API_KEY=your-guild-token
+export GUILD_WORKSPACE_ID=your-workspace-id
+```
+
+After a successful generate in Blender (for example `add more windows`), the
+sidebar shows the full request timeline (`parse → validate → route → execute`)
+with timings. Use **Open in Guild** to inspect the exported trace, or enable
+**Auto-open Guild after generate** in Connection Settings.
+
+## OpenUI
+
+Every prompt response includes OpenUI Lang that describes the request timeline
+and Engineering IR summary. In Blender, use **Show OpenUI Lang** to inspect the
+generative UI description in the Text Editor.
+
+## ClickHouse
+
+Enable trace storage for analytics across requests:
+
+```bash
+export CLICKHOUSE_ENABLED=true
+export CLICKHOUSE_HOST=your-host.clickhouse.cloud
+export CLICKHOUSE_PORT=8443
+export CLICKHOUSE_SECURE=true
+export CLICKHOUSE_USERNAME=default
+export CLICKHOUSE_PASSWORD=your-password
+```
+
+Trace rows are inserted into `cad_agent_traces` after each prompt and execution
+report.
+
+## Composio
+
+Notify an external action after Blender execution completes:
+
+```bash
+export COMPOSIO_ENABLED=true
+export COMPOSIO_API_KEY=your-composio-key
+export COMPOSIO_USER_ID=cad-agent-user
+export COMPOSIO_TOOL_SLUG=YOUR_CONFIGURED_TOOL
+```
+
+Composio receives a summary of the full request timeline when execution is
+reported.
+
+## Pioneer
+
+Use Pioneer as the inference provider with the OpenAI-compatible API:
+
+```bash
+export CAD_AGENT_PROVIDER=pioneer
+export PIONEER_API_KEY=your-pioneer-key
+export PIONEER_MODEL_ID=your-model-id
+```
+
+Pioneer runs with the same Engineering IR schema as OpenAI. If inference fails,
+the deterministic house demo fallback still applies.
+
+## Airbyte
+
+Export design context for Airbyte to sync into your context layer:
+
+```bash
+export AIRBYTE_ENABLED=true
+export AIRBYTE_CONTEXT_DIR=./airbyte/context
+# optional HTTP sink:
+export AIRBYTE_CONTEXT_ENDPOINT=https://your-context-endpoint
+```
+
+Each prompt and execution appends a JSONL record with the prompt, IR, and trace.
+
+## Render
+
+Deploy the API on Render using the included blueprint:
+
+```bash
+# Connect your repo in the Render dashboard and use render.yaml,
+# or run: render blueprint launch
+```
+
+The service uses the repo `Dockerfile`, exposes port 8000, and health-checks
+`/api/health`. Demo mode is enabled by default in `render.yaml`.

@@ -30,6 +30,12 @@ def test_deterministic_provider_rejects_unsupported_prompt() -> None:
         run(DeterministicProvider().generate("make a turbine", None))
 
 
+def test_bedroom_includes_bed_desk_and_chair() -> None:
+    ir = run(DeterministicProvider().generate("make a cozy bedroom", None))
+    labels = {item.label for item in ir.scene.objects}
+    assert {"bed_mattress", "desk_top", "chair_seat"}.issubset(labels)
+
+
 @dataclass
 class FakeResponse:
     output_parsed: object
