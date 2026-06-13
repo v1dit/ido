@@ -4,6 +4,8 @@
 
 # idō
 
+Top 3 AWS x Anthropic Hackathon
+
 idō is one local companion for two separate CAD workflows:
 
 - `adapters/blender/` renders editable Engineering IR inside Blender.
