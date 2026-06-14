@@ -2,9 +2,11 @@
   <img src="assets/ido-banner.png" alt="idō" width="640" />
 </p>
 
-# idō
+<p align="center">
+  🏆 <strong>Top 5 at Anthropic × AWS Hackathon</strong>
+</p>
 
-Top 3 AWS x Anthropic Hackathon
+# idō
 
 idō is one local companion for two separate CAD workflows:
 
