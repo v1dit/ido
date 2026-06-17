@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  🏆 <strong>Top 5 at Anthropic × AWS Hackathon</strong>
+  🏆 <strong>Top 3 at Anthropic × AWS Hackathon</strong>
 </p>
 
 # idō
